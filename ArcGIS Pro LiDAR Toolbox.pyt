@@ -14,7 +14,6 @@ LiDAR streamlining
 """
 import os
 import traceback
-import traceback
 
 import arcpy
 
@@ -58,10 +57,10 @@ class Toolbox(object):
     def __init__(self):
         self.label = "LiDAR Tools"
         self.alias = "LiDAR_Tools"
-        self.tools = [CreateLasDatasetProducts]
+        self.tools = [CreateLiDARProducts]
 
 
-class CreateLasDatasetProducts(object):
+class CreateLiDARProducts(object):
     def __init__(self):
         self.label = "Create LiDAR Products"
         self.description = "Create LiDAR Products"
@@ -117,21 +116,21 @@ class CreateLasDatasetProducts(object):
 
         # Classifications
         classify_building=arcpy.Parameter(
-            displayName="Classify LAS Buildings",
+            displayName="Reclassify LAS Buildings",
             name="Classify_LAS_Buildings",
             datatype="Boolean",
             parameterType="Optional",
             category='Classification',
             )
         classify_ground=arcpy.Parameter(
-            displayName="Classify LAS Ground",
+            displayName="Reclassify LAS Ground",
             name="Classify_LAS_Ground",
             datatype="Boolean",
             parameterType="Optional",
             category='Classification',
             )
         classify_noise=arcpy.Parameter(
-            displayName="Classify LAS Noise",
+            displayName="Reclassify LAS Noise",
             name="Classify_LAS_Noise",
             datatype="Boolean",
             parameterType="Optional",
@@ -160,6 +159,12 @@ class CreateLasDatasetProducts(object):
         [input_LAS_Files, output_folder, out_name, projection, out_dem, out_intensity,
          classify_building, classify_ground, classify_noise, polygons]= parameters
 
+        if input_LAS_Files.value:
+            inputs = [i.strip("'") for i in input_LAS_Files.valueAsText.split(';')]
+            inputs = [i for i in inputs if os.path.splitext(i)[1].lower() == '.las'] 
+            srs = [arcpy.Describe(i).spatialReference for i in inputs]
+            projection.value = srs[0]
+
         polygons.filter.type = "ValueList"
         polygons.filter.list = ['Ground', 'Low Vegetation', 'Medium Vegetation', 'High Vegetation', 'Building',
                                 'Low Point', 'Water', 'Rail', 'Road Surface', 'Bridge Deck',]
@@ -169,11 +174,15 @@ class CreateLasDatasetProducts(object):
         [input_LAS_Files, output_folder, out_name, projection, out_dem, out_intensity,
          classify_building, classify_ground, classify_noise, polygons] = parameters
 
-        # Set error on non-LAZ input
+        # Set error on non-(.las/.laz) input
         if input_LAS_Files.value:
-            inputs = input_LAS_Files.valueAsText.split(';')
-            if not all([i.strip("'").lower().endswith(".las") for i in inputs]):
-                input_LAS_Files.setErrorMessage('Input file is not a las file [*.las]')
+            inputs = [i.strip("'") for i in input_LAS_Files.valueAsText.split(';')]
+            for i in inputs:
+                if not os.path.splitext(i)[1].lower() in ('.las', '.lasz'):
+                    input_LAS_Files.setErrorMessage(f'Input: [{i}] is not a las/lasz file..')
+            srs = [arcpy.Describe(i).spatialReference.name for i in inputs]
+            if len(set(srs)) > 1:
+                input_LAS_Files.setErrorMessage(f'Inputs must be in the same projection..\n{srs}')
 
         return
 
