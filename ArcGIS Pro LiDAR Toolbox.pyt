@@ -10,7 +10,6 @@ Summary:
 LiDAR streamlining
 
 
-
 """
 import os
 import traceback
@@ -143,30 +142,30 @@ class CreateLiDARProducts(object):
             category='Rasters',
             )
 
-        # # Classifications
-        # classify_building=arcpy.Parameter(
-        #     displayName="Reclassify LAS Buildings",
-        #     name="Classify_LAS_Buildings",
-        #     datatype="Boolean",
-        #     parameterType="Optional",
-        #     category='Classification',
-        #     )
+        # Classifications
+        classify_building=arcpy.Parameter(
+            displayName="Reclassify LAS Buildings",
+            name="Classify_LAS_Buildings",
+            datatype="Boolean",
+            parameterType="Optional",
+            category='Classification',
+            )
         
-        # classify_ground=arcpy.Parameter(
-        #     displayName="Reclassify LAS Ground",
-        #     name="Classify_LAS_Ground",
-        #     datatype="Boolean",
-        #     parameterType="Optional",
-        #     category='Classification',
-        #     )
+        classify_ground=arcpy.Parameter(
+            displayName="Reclassify LAS Ground",
+            name="Classify_LAS_Ground",
+            datatype="Boolean",
+            parameterType="Optional",
+            category='Classification',
+            )
         
-        # classify_noise=arcpy.Parameter(
-        #     displayName="Reclassify LAS Noise",
-        #     name="Classify_LAS_Noise",
-        #     datatype="Boolean",
-        #     parameterType="Optional",
-        #     category='Classification',
-        #     )
+        classify_noise=arcpy.Parameter(
+            displayName="Reclassify LAS Noise",
+            name="Classify_LAS_Noise",
+            datatype="Boolean",
+            parameterType="Optional",
+            category='Classification',
+            )
 
         #Polygons
         polygons=arcpy.Parameter(
@@ -179,26 +178,40 @@ class CreateLiDARProducts(object):
             )
 
         return [
-            input_LAS_Files, output_folder, out_name, projection, extent_polygon, 
+            input_LAS_Files, output_folder, out_name, projection, extent_polygon,
+            classify_building, classify_ground, classify_noise,
             out_dem, out_slope, out_hillshade, out_intensity, 
-            # classify_building, classify_ground, classify_noise,
             polygons]
 
     def isLicensed(self):
         return True
 
     def updateParameters(self, parameters):
-        [input_LAS_Files, output_folder, out_name, projection, extent_polygon, 
+        [input_LAS_Files, output_folder, out_name, projection, extent_polygon,
+         classify_building, classify_ground, classify_noise,
          out_dem, out_slope, out_hillshade, out_intensity, 
-        #  classify_building, classify_ground, classify_noise,
-         polygons]= parameters
+         polygons] = parameters
 
+        extent_polygon.filter.list = ["Polygon"]
         if input_LAS_Files.value:
             inputs = [i.strip("'") for i in input_LAS_Files.valueAsText.split(';')]
             inputs = [i for i in inputs if os.path.splitext(i)[1].lower() in ('.las', '.zlas')] 
             srs = [arcpy.Describe(i).spatialReference for i in inputs]
             projection.value = srs[0]
-
+            
+            # Can't update the classification of points in zlas files..
+            if any([i for i in inputs if os.path.splitext(i)[1].lower() == '.zlas']):
+                classify_building.value = None
+                classify_building.enabled = False
+                classify_ground.value = None
+                classify_ground.enabled = False
+                classify_noise.value = None
+                classify_noise.enabled = False
+            else:
+                classify_building.enabled = True
+                classify_ground.enabled = True
+                classify_noise.enabled = True
+                
         if out_dem.value:
             out_slope.enabled = True
             out_hillshade.enabled = True
@@ -214,10 +227,10 @@ class CreateLiDARProducts(object):
         return
 
     def updateMessages(self, parameters):
-        [input_LAS_Files, output_folder, out_name, projection, extent_polygon, 
+        [input_LAS_Files, output_folder, out_name, projection, extent_polygon,
+         classify_building, classify_ground, classify_noise,
          out_dem, out_slope, out_hillshade, out_intensity, 
-        #  classify_building, classify_ground, classify_noise,
-         polygons]= parameters
+         polygons] = parameters
 
         # Set error on non-(.las/.lasz) input
         if input_LAS_Files.value:
@@ -225,21 +238,25 @@ class CreateLiDARProducts(object):
             for i in inputs:
                 if not os.path.splitext(i)[1].lower() in ('.las', '.zlas'):
                     input_LAS_Files.setErrorMessage(f'Input: [{i}] is not a las/zlas file..')
+                    
+            # Set error on conflicting spatial references
+            inputs = [i for i in inputs if os.path.splitext(i)[1].lower() in ('.las', '.zlas')]
             srs = [arcpy.Describe(i).spatialReference.name for i in inputs]
             if len(set(srs)) > 1:
                 input_LAS_Files.setErrorMessage(f'Inputs must be in the same projection..\n{srs}')
 
-        if extent_polygon.value:
-            if not len([i for i in arcpy.Describe(extent_polygon.value).FIDSet.split(';')]) == 1:
-                extent_polygon.setErrorMessage('Select a single polygon from the input layer..')
+        # # Verify a single polygon is selected
+        # if extent_polygon.value:
+        #     if not len([i for i in arcpy.Describe(extent_polygon.value).FIDSet.split(';')]) == 1:
+        #         extent_polygon.setErrorMessage('Select a single polygon from the input layer..')
                 
         return
 
     def execute(self, parameters, messages):
-        [input_LAS_Files, output_folder, out_name, projection, extent_polygon, 
+        [input_LAS_Files, output_folder, out_name, projection, extent_polygon,
+         classify_building, classify_ground, classify_noise,
          out_dem, out_slope, out_hillshade, out_intensity, 
-        #  classify_building, classify_ground, classify_noise,
-         polygons]= parameters
+         polygons] = parameters
 
         try:
             # Create a geodatabase
@@ -262,6 +279,23 @@ class CreateLiDARProducts(object):
                 relative_paths="ABSOLUTE_PATHS",
                 create_las_prj="ALL_FILES",
                 )
+            
+            # Update LAS classifications
+            if classify_ground.value == 1:
+                arcpy.AddMessage('Updating Ground Classifications..')
+                arcpy.ddd.ClassifyLasGround(out_lasd, "STANDARD", "REUSE_GROUND", "0.5 Meters")
+
+            if classify_building.value == 1:
+                arcpy.AddMessage('Updating Building Classifications..')
+                arcpy.ddd.ClassifyLasBuilding(out_lasd, "2 Meters", "4 SquareMeters")
+
+            if classify_noise.value == 1:
+                arcpy.AddMessage('Updating Noise Classifications..')
+                arcpy.ddd.ClassifyLasNoise(
+                    out_lasd, "ISOLATION", "CLASSIFY", "NO_WITHHELD", "COMPUTE_STATS", None, None, None, 10,
+                    "8 Meters", "8 Meters", "DEFAULT", "PROCESS_EXTENT", None, "UPDATE_PYRAMID"
+                    )
+
             # Make a bare-ground only lasd layer for DEM and subsequent calculations
             dem_lasd = arcpy.management.MakeLasDatasetLayer(
                 in_las_dataset=out_lasd,
@@ -276,22 +310,6 @@ class CreateLiDARProducts(object):
                 overlap="INCLUDE_OVERLAP",
                 )
             
-            # # Update LAS classifications
-            # if classify_ground.value == 1:
-            #     arcpy.AddMessage('Updating Ground Classifications..')
-            #     arcpy.ddd.ClassifyLasGround(out_lasd, "STANDARD", "REUSE_GROUND", "0.5 Meters")
-
-            # if classify_building.value == 1:
-            #     arcpy.AddMessage('Updating Building Classifications..')
-            #     arcpy.ddd.ClassifyLasBuilding(out_lasd, "2 Meters", "4 SquareMeters")
-
-            # if classify_noise.value == 1:
-            #     arcpy.AddMessage('Updating Noise Classifications..')
-            #     arcpy.ddd.ClassifyLasNoise(
-            #         out_lasd, "ISOLATION", "CLASSIFY", "NO_WITHHELD", "COMPUTE_STATS", None, None, None, 10,
-            #         "8 Meters", "8 Meters", "DEFAULT", "PROCESS_EXTENT", None, "UPDATE_PYRAMID"
-            #         )
-
             # Create DEM and Intensity surfaces
             if out_dem.value == 1:
                 arcpy.AddMessage('Creating DEM Surface..')
