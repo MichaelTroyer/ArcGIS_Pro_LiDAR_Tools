@@ -56,7 +56,7 @@ def build_where_clause(table, field, valueList):
 class Toolbox(object):
     def __init__(self):
         self.label = "LiDAR Tools"
-        self.alias = "LiDAR_Tools"
+        self.alias = "LiDARTools"
         self.tools = [CreateLiDARProducts]
 
 
@@ -89,10 +89,10 @@ class CreateLiDARProducts(object):
             datatype="GPString",
             )
 
-        # Projection
-        projection=arcpy.Parameter(
-            displayName="LAS File Projection",
-            name="LAS_File_Projection",
+        # Coordiante System
+        coord_sys=arcpy.Parameter(
+            displayName="LAS File Coordinate System",
+            name="LAS_File_Coordinate_System",
             datatype="GPSpatialReference",
             )
                 
@@ -178,7 +178,7 @@ class CreateLiDARProducts(object):
             )
 
         return [
-            input_LAS_Files, output_folder, out_name, projection, extent_polygon,
+            input_LAS_Files, output_folder, out_name, coord_sys, extent_polygon,
             classify_building, classify_ground, classify_noise,
             out_dem, out_slope, out_hillshade, out_intensity, 
             polygons]
@@ -187,17 +187,17 @@ class CreateLiDARProducts(object):
         return True
 
     def updateParameters(self, parameters):
-        [input_LAS_Files, output_folder, out_name, projection, extent_polygon,
+        [input_LAS_Files, output_folder, out_name, coord_sys, extent_polygon,
          classify_building, classify_ground, classify_noise,
          out_dem, out_slope, out_hillshade, out_intensity, 
          polygons] = parameters
 
         extent_polygon.filter.list = ["Polygon"]
-        if input_LAS_Files.value:
+        if input_LAS_Files.value and not coord_sys.altered:
             inputs = [i.strip("'") for i in input_LAS_Files.valueAsText.split(';')]
             inputs = [i for i in inputs if os.path.splitext(i)[1].lower() in ('.las', '.zlas')] 
             srs = [arcpy.Describe(i).spatialReference for i in inputs]
-            projection.value = srs[0]
+            coord_sys.value = srs[0]
             
             # Can't update the classification of points in zlas files..
             if any([i for i in inputs if os.path.splitext(i)[1].lower() == '.zlas']):
@@ -227,7 +227,7 @@ class CreateLiDARProducts(object):
         return
 
     def updateMessages(self, parameters):
-        [input_LAS_Files, output_folder, out_name, projection, extent_polygon,
+        [input_LAS_Files, output_folder, out_name, coord_sys, extent_polygon,
          classify_building, classify_ground, classify_noise,
          out_dem, out_slope, out_hillshade, out_intensity, 
          polygons] = parameters
@@ -243,7 +243,7 @@ class CreateLiDARProducts(object):
             inputs = [i for i in inputs if os.path.splitext(i)[1].lower() in ('.las', '.zlas')]
             srs = [arcpy.Describe(i).spatialReference.name for i in inputs]
             if len(set(srs)) > 1:
-                input_LAS_Files.setErrorMessage(f'Inputs must be in the same projection..\n{srs}')
+                input_LAS_Files.setErrorMessage(f'Inputs must be in the same coordinate system..\n{srs}')
 
         # # Verify a single polygon is selected
         # if extent_polygon.value:
@@ -253,7 +253,7 @@ class CreateLiDARProducts(object):
         return
 
     def execute(self, parameters, messages):
-        [input_LAS_Files, output_folder, out_name, projection, extent_polygon,
+        [input_LAS_Files, output_folder, out_name, coord_sys, extent_polygon,
          classify_building, classify_ground, classify_noise,
          out_dem, out_slope, out_hillshade, out_intensity, 
          polygons] = parameters
@@ -274,7 +274,7 @@ class CreateLiDARProducts(object):
                 out_las_dataset=out_lasd,
                 folder_recursion='NO_RECURSION',
                 in_surface_constraints=None,
-                spatial_reference=projection.value,
+                spatial_reference=coord_sys.value,
                 compute_stats="COMPUTE_STATS",
                 relative_paths="ABSOLUTE_PATHS",
                 create_las_prj="ALL_FILES",
