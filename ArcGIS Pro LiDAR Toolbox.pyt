@@ -11,6 +11,7 @@ LiDAR streamlining
 
 
 """
+import math
 import os
 import traceback
 import arcpy
@@ -41,6 +42,7 @@ LiDAR_CLASS_CODES = {
     }
 REVERSE_LOOKUP = {v:k for k, v in LiDAR_CLASS_CODES.items()}
 
+ALLOWED_FORMATS = ('.las', '.zlas')
 
 def build_where_clause(table, field, valueList):
     """Takes a list of values and constructs a SQL WHERE
@@ -176,13 +178,27 @@ class CreateLiDARProducts(object):
             multiValue=True,
             category='Polygons',
             )
+        aggregate_polygons=arcpy.Parameter(
+            displayName="Aggregate Polygons (remove holes and small features)",
+            name="Agggregate_Polygons",
+            datatype="Boolean",
+            parameterType="Optional",
+            category='Polygons',
+            )
+        minimum_area=arcpy.Parameter(
+            displayName="Minimum Polygon/Hole Area (square meters)",
+            name="Minimum_Area",
+            datatype="Long",
+            parameterType="Optional",
+            category='Polygons',
+            )
 
         return [
             input_LAS_Files, output_folder, out_name, coord_sys, extent_polygon,
             classify_building, classify_ground, classify_noise,
             out_dem, out_slope, out_hillshade, out_intensity, 
-            polygons]
-
+            polygons, aggregate_polygons, minimum_area]
+        
     def isLicensed(self):
         return True
 
@@ -190,22 +206,22 @@ class CreateLiDARProducts(object):
         [input_LAS_Files, output_folder, out_name, coord_sys, extent_polygon,
          classify_building, classify_ground, classify_noise,
          out_dem, out_slope, out_hillshade, out_intensity, 
-         polygons] = parameters
+         polygons, aggregate_polygons, minimum_area] = parameters
 
         extent_polygon.filter.list = ["Polygon"]
         if input_LAS_Files.value and not coord_sys.altered:
             inputs = [i.strip("'") for i in input_LAS_Files.valueAsText.split(';')]
-            inputs = [i for i in inputs if os.path.splitext(i)[1].lower() in ('.las', '.zlas')] 
+            inputs = [i for i in inputs if os.path.splitext(i)[1].lower() in ALLOWED_FORMATS]
             srs = [arcpy.Describe(i).spatialReference for i in inputs]
             coord_sys.value = srs[0]
-            
+                        
             # Can't update the classification of points in zlas files..
-            if any([i for i in inputs if os.path.splitext(i)[1].lower() == '.zlas']):
-                classify_building.value = None
+            if any([i for i in inputs if os.path.splitext(i)[1].lower() in ('.zlas', '.laz')]):
+                classify_building.value = False
                 classify_building.enabled = False
-                classify_ground.value = None
+                classify_ground.value = False
                 classify_ground.enabled = False
-                classify_noise.value = None
+                classify_noise.value = False
                 classify_noise.enabled = False
             else:
                 classify_building.enabled = True
@@ -216,31 +232,49 @@ class CreateLiDARProducts(object):
             out_slope.enabled = True
             out_hillshade.enabled = True
         else:
-            out_slope.value = None
+            out_slope.value = False
             out_slope.enabled = False
             out_hillshade.value = False
             out_hillshade.enabled = False
 
         polygons.filter.type = "ValueList"
         polygons.filter.list = ['Ground', 'Low Vegetation', 'Medium Vegetation', 'High Vegetation', 'Building',
-                                'Low Point', 'Water', 'Rail', 'Road Surface', 'Bridge Deck',]
+                                'Low Point', 'Water', 'Rail', 'Road Surface', 'Bridge Deck','Transmission Tower',
+                                'High Noise', 'Unassigned']
+        
+        if polygons.value:
+            aggregate_polygons.enabled = True
+        else:
+            aggregate_polygons.value = None
+            minimum_area.value = None
+            aggregate_polygons.enabled = False
+            minimum_area.enabled = False
+            
+        if aggregate_polygons.value:
+            minimum_area.enabled = True
+            if not minimum_area.value:
+                minimum_area.value = 5
+        else:
+            minimum_area.value = None
+            minimum_area.enabled = False
+            
         return
 
     def updateMessages(self, parameters):
         [input_LAS_Files, output_folder, out_name, coord_sys, extent_polygon,
          classify_building, classify_ground, classify_noise,
          out_dem, out_slope, out_hillshade, out_intensity, 
-         polygons] = parameters
+         polygons, aggregate_polygons, minimum_area] = parameters
 
         # Set error on non-(.las/.lasz) input
         if input_LAS_Files.value:
             inputs = [i.strip("'") for i in input_LAS_Files.valueAsText.split(';')]
             for i in inputs:
-                if not os.path.splitext(i)[1].lower() in ('.las', '.zlas'):
+                if not os.path.splitext(i)[1].lower() in ALLOWED_FORMATS:
                     input_LAS_Files.setErrorMessage(f'Input: [{i}] is not a las/zlas file..')
                     
             # Set error on conflicting spatial references
-            inputs = [i for i in inputs if os.path.splitext(i)[1].lower() in ('.las', '.zlas')]
+            inputs = [i for i in inputs if os.path.splitext(i)[1].lower() in ALLOWED_FORMATS]
             srs = [arcpy.Describe(i).spatialReference.name for i in inputs]
             if len(set(srs)) > 1:
                 input_LAS_Files.setErrorMessage(f'Inputs must be in the same coordinate system..\n{srs}')
@@ -256,7 +290,7 @@ class CreateLiDARProducts(object):
         [input_LAS_Files, output_folder, out_name, coord_sys, extent_polygon,
          classify_building, classify_ground, classify_noise,
          out_dem, out_slope, out_hillshade, out_intensity, 
-         polygons] = parameters
+         polygons, aggregate_polygons, minimum_area] = parameters
 
         try:
             # Create a geodatabase
@@ -307,7 +341,12 @@ class CreateLiDARProducts(object):
                 keypoint="INCLUDE_KEYPOINT",
                 withheld="EXCLUDE_WITHHELD",
                 surface_constraints=None,
-                overlap="INCLUDE_OVERLAP",
+                
+                ###
+                # overlap="INCLUDE_OVERLAP",
+                overlap="EXCLUDE_OVERLAP",
+                ###
+                
                 )
             
             # Create DEM and Intensity surfaces
@@ -379,7 +418,18 @@ class CreateLiDARProducts(object):
                         except:
                             row[1] = 'Undefined'
 
-                arcpy.CopyFeatures_management(polygon_layer, os.path.join(out_gdb, "Classified_Polygons"))
+                if aggregate_polygons.value:
+                    arcpy.AddMessage('Aggregating Polygons..')
+                    arcpy.cartography.AggregatePolygons(
+                        in_features=polygon_layer,
+                        out_feature_class=os.path.join(out_gdb, "Classified_Polygons"),
+                        aggregation_distance=f"{round(math.sqrt(minimum_area.value))} Meters",
+                        minimum_area=f"{minimum_area.value} SquareMeters",
+                        minimum_hole_size=f"{minimum_area.value} SquareMeters",
+                        aggregate_field="Class",
+                        )
+                else:
+                    arcpy.CopyFeatures_management(polygon_layer, os.path.join(out_gdb, "Classified_Polygons"))
 
                 arcpy.Delete_management(class_polygons)
                 arcpy.Delete_management(polygon_layer)
