@@ -42,7 +42,7 @@ LiDAR_CLASS_CODES = {
     }
 REVERSE_LOOKUP = {v:k for k, v in LiDAR_CLASS_CODES.items()}
 
-ALLOWED_FORMATS = ('.las', '.zlas')
+ALLOWED_FORMATS = ('.las', '.zlas', '.laz')
 
 def build_where_clause(table, field, valueList):
     """Takes a list of values and constructs a SQL WHERE
@@ -211,11 +211,12 @@ class CreateLiDARProducts(object):
         extent_polygon.filter.list = ["Polygon"]
         if input_LAS_Files.value and not coord_sys.altered:
             inputs = [i.strip("'") for i in input_LAS_Files.valueAsText.split(';')]
-            inputs = [i for i in inputs if os.path.splitext(i)[1].lower() in ALLOWED_FORMATS]
-            srs = [arcpy.Describe(i).spatialReference for i in inputs]
+            las_inputs = [i for i in inputs if os.path.splitext(i)[1].lower() == '.las']
+            srs = [arcpy.Describe(i).spatialReference for i in las_inputs]
             coord_sys.value = srs[0]
-                        
-            # Can't update the classification of points in zlas files..
+        elif input_LAS_Files.value:             
+            inputs = [i.strip("'") for i in input_LAS_Files.valueAsText.split(';')]   
+            # Can't update the classification of points in zlas/laz files..
             if any([i for i in inputs if os.path.splitext(i)[1].lower() in ('.zlas', '.laz')]):
                 classify_building.value = False
                 classify_building.enabled = False
@@ -271,19 +272,20 @@ class CreateLiDARProducts(object):
             inputs = [i.strip("'") for i in input_LAS_Files.valueAsText.split(';')]
             for i in inputs:
                 if not os.path.splitext(i)[1].lower() in ALLOWED_FORMATS:
-                    input_LAS_Files.setErrorMessage(f'Input: [{i}] is not a las/zlas file..')
+                    input_LAS_Files.setErrorMessage(f'Input: [{i}] is not a las/zlas/laz file..')
                     
             # Set error on conflicting spatial references
-            inputs = [i for i in inputs if os.path.splitext(i)[1].lower() in ALLOWED_FORMATS]
-            srs = [arcpy.Describe(i).spatialReference.name for i in inputs]
+            las_inputs = [i for i in inputs if os.path.splitext(i)[1].lower() == '.las']
+            srs = [arcpy.Describe(i).spatialReference.name for i in las_inputs]
             if len(set(srs)) > 1:
                 input_LAS_Files.setErrorMessage(f'Inputs must be in the same coordinate system..\n{srs}')
 
-        # # Verify a single polygon is selected
-        # if extent_polygon.value:
-        #     if not len([i for i in arcpy.Describe(extent_polygon.value).FIDSet.split(';')]) == 1:
-        #         extent_polygon.setErrorMessage('Select a single polygon from the input layer..')
-                
+            # Set error on duplicate inputs
+            if len(set(inputs)) != len(inputs):
+                    err_mg = ("Duplicate input data: the same files cannnot be used more than once.")
+                    input_LAS_Files.setErrorMessage(err_mg)
+        
+        
         return
 
     def execute(self, parameters, messages):
