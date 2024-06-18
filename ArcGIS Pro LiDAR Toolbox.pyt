@@ -18,6 +18,15 @@ import arcpy
 
 arcpy.env.overwriteOutput = True
 
+arcpy.CheckOutExtension("Spatial")
+
+# Check for 3D license. If no 3D license, LiDAR point reclassification is not available. 
+if arcpy.CheckExtension("3D") == "Available":
+    arcpy.CheckOutExtension("3D")
+    _3D = True
+else:
+    _3D = False
+
 
 LiDAR_CLASS_CODES = {
     0  : 'Never classified',
@@ -106,44 +115,6 @@ class CreateLiDARProducts(object):
             parameterType="Optional",
             )
 
-        # DEM
-        out_dem=arcpy.Parameter(
-            displayName="Digital Elevation Model",
-            name="create_dem",
-            datatype="Boolean",
-            parameterType="Optional",
-            category='Rasters',
-            )
-        
-        # Slope
-        out_slope=arcpy.Parameter(
-            displayName="Slope",
-            name="Create_Slope",
-            datatype="Boolean",
-            parameterType="Optional",
-            category='Rasters',
-            enabled=False,
-            )
-        
-        # Hillshade
-        out_hillshade=arcpy.Parameter(
-            displayName="Hillshade",
-            name="Create_Hillshade",
-            datatype="Boolean",
-            parameterType="Optional",
-            category='Rasters',
-            enabled=False,
-            )
-
-        # Intensity
-        out_intensity=arcpy.Parameter(
-            displayName="Return Intensity",
-            name="Create_Intensity",
-            datatype="Boolean",
-            parameterType="Optional",
-            category='Rasters',
-            )
-
         # Classifications
         classify_building=arcpy.Parameter(
             displayName="Reclassify LAS Buildings",
@@ -167,6 +138,62 @@ class CreateLiDARProducts(object):
             datatype="Boolean",
             parameterType="Optional",
             category='Classification',
+            )
+        
+        # DEM
+        out_dem=arcpy.Parameter(
+            displayName="Digital Elevation Model",
+            name="create_dem",
+            datatype="Boolean",
+            parameterType="Optional",
+            category="Surfaces",
+            )
+        
+        # Slope
+        out_slope=arcpy.Parameter(
+            displayName="Slope",
+            name="Create_Slope",
+            datatype="Boolean",
+            parameterType="Optional",
+            category="Surfaces",
+            enabled=False,
+            )
+        
+        # Hillshade
+        out_hillshade=arcpy.Parameter(
+            displayName="Hillshade",
+            name="Create_Hillshade",
+            datatype="Boolean",
+            parameterType="Optional",
+            category="Surfaces",
+            enabled=False,
+            )
+
+        # Intensity
+        out_intensity=arcpy.Parameter(
+            displayName="Intensity",
+            name="Create_Intensity",
+            datatype="Boolean",
+            parameterType="Optional",
+            category="Surfaces",
+            )
+        
+        #Contours
+        out_contours=arcpy.Parameter(
+            displayName="Create Contours",
+            name="Create_Contours",
+            datatype="Boolean",
+            parameterType="Optional",
+            category="Contours",
+            enabled=False,
+            )
+        out_contours_interval=arcpy.Parameter(
+            displayName="Contour Interval (in source units)",
+            name="Contour_Interval",
+            datatype="Long",
+            parameterType="Optional",
+            category="Contours",
+            enabled=False,
             )
 
         #Polygons
@@ -194,21 +221,26 @@ class CreateLiDARProducts(object):
             )
 
         return [
-            input_LAS_Files, output_folder, out_name, coord_sys, extent_polygon,
+            input_LAS_Files, output_folder, out_name,
+            coord_sys, extent_polygon,
             classify_building, classify_ground, classify_noise,
-            out_dem, out_slope, out_hillshade, out_intensity, 
+            out_dem, out_slope, out_hillshade, out_intensity,
+            out_contours, out_contours_interval,
             polygons, aggregate_polygons, minimum_area]
         
     def isLicensed(self):
         return True
 
     def updateParameters(self, parameters):
-        [input_LAS_Files, output_folder, out_name, coord_sys, extent_polygon,
+        [input_LAS_Files, output_folder, out_name,
+         coord_sys, extent_polygon,
          classify_building, classify_ground, classify_noise,
-         out_dem, out_slope, out_hillshade, out_intensity, 
+         out_dem, out_slope, out_hillshade, out_intensity,
+         out_contours, out_contours_interval,
          polygons, aggregate_polygons, minimum_area] = parameters
 
         extent_polygon.filter.list = ["Polygon"]
+        
         if input_LAS_Files.value and not coord_sys.altered:
             inputs = [i.strip("'") for i in input_LAS_Files.valueAsText.split(';')]
             las_inputs = [i for i in inputs if os.path.splitext(i)[1].lower() == '.las']
@@ -217,7 +249,7 @@ class CreateLiDARProducts(object):
         elif input_LAS_Files.value:             
             inputs = [i.strip("'") for i in input_LAS_Files.valueAsText.split(';')]   
             # Can't update the classification of points in zlas/laz files..
-            if any([i for i in inputs if os.path.splitext(i)[1].lower() in ('.zlas', '.laz')]):
+            if any([i for i in inputs if os.path.splitext(i)[1].lower() in ('.zlas', '.laz')]) or not _3D:
                 classify_building.value = False
                 classify_building.enabled = False
                 classify_ground.value = False
@@ -232,11 +264,22 @@ class CreateLiDARProducts(object):
         if out_dem.value:
             out_slope.enabled = True
             out_hillshade.enabled = True
+            out_contours.enabled = True
         else:
             out_slope.value = False
             out_slope.enabled = False
             out_hillshade.value = False
             out_hillshade.enabled = False
+            out_contours.value = False
+            out_contours.enabled = False
+            
+        if out_contours.value:
+            out_contours_interval.enabled = True
+            if not out_contours_interval.altered:
+                out_contours_interval.value = 3
+        else:
+            out_contours_interval.value = None
+            out_contours_interval.enabled = False
 
         polygons.filter.type = "ValueList"
         polygons.filter.list = ['Ground', 'Low Vegetation', 'Medium Vegetation', 'High Vegetation', 'Building',
@@ -262,9 +305,11 @@ class CreateLiDARProducts(object):
         return
 
     def updateMessages(self, parameters):
-        [input_LAS_Files, output_folder, out_name, coord_sys, extent_polygon,
+        [input_LAS_Files, output_folder, out_name,
+         coord_sys, extent_polygon,
          classify_building, classify_ground, classify_noise,
-         out_dem, out_slope, out_hillshade, out_intensity, 
+         out_dem, out_slope, out_hillshade, out_intensity,
+         out_contours, out_contours_interval,
          polygons, aggregate_polygons, minimum_area] = parameters
 
         # Set error on non-(.las/.lasz) input
@@ -282,16 +327,18 @@ class CreateLiDARProducts(object):
 
             # Set error on duplicate inputs
             if len(set(inputs)) != len(inputs):
-                    err_mg = ("Duplicate input data: the same files cannnot be used more than once.")
+                    err_mg = ("Duplicate input data: the same file cannnot be used more than once.")
                     input_LAS_Files.setErrorMessage(err_mg)
         
         
         return
 
     def execute(self, parameters, messages):
-        [input_LAS_Files, output_folder, out_name, coord_sys, extent_polygon,
+        [input_LAS_Files, output_folder, out_name,
+         coord_sys, extent_polygon,
          classify_building, classify_ground, classify_noise,
-         out_dem, out_slope, out_hillshade, out_intensity, 
+         out_dem, out_slope, out_hillshade, out_intensity,
+         out_contours, out_contours_interval,
          polygons, aggregate_polygons, minimum_area] = parameters
 
         try:
@@ -343,16 +390,14 @@ class CreateLiDARProducts(object):
                 keypoint="INCLUDE_KEYPOINT",
                 withheld="EXCLUDE_WITHHELD",
                 surface_constraints=None,
-                
                 ###
                 # overlap="INCLUDE_OVERLAP",
                 overlap="EXCLUDE_OVERLAP",
                 ###
-                
                 )
             
             # Create DEM and Intensity surfaces
-            if out_dem.value == 1:
+            if out_dem.value:
                 arcpy.AddMessage('Creating DEM Surface..')
                 dem = arcpy.conversion.LasDatasetToRaster(
                     dem_lasd, os.path.join(out_gdb, "Elevation"), "ELEVATION", "BINNING AVERAGE LINEAR", "FLOAT", "CELLSIZE", 1, 1
@@ -362,22 +407,43 @@ class CreateLiDARProducts(object):
                     outExtractByMask.save(os.path.join(out_gdb, "Elevation"))
             
             if out_slope.value:
-                arcpy.AddMessage('Creating Slope Surface..')
-                slope = arcpy.ddd.Slope(dem, os.path.join(out_gdb, "Slope"), "DEGREE", 1, "PLANAR", "METER")
-                    
+                try:
+                    arcpy.AddMessage('Creating Slope Surface..')
+                    slope = arcpy.sa.SurfaceParameters(dem, 'SLOPE', output_slope_measurement='Degree')
+                    slope.save(os.path.join(out_gdb, "Slope"))
+                except Exception as e:
+                    arcpy.AddWarning(f'Could not create slope raster: {e}')
+                
             if out_hillshade.value:
-                arcpy.AddMessage('Creating Hillshade..')
-                shade = arcpy.ddd.HillShade(dem, os.path.join(out_gdb, "Hillshade"), 315, 45, "NO_SHADOWS", 1)
-                    
-            if out_intensity.value == 1:
-                arcpy.AddMessage('Creating Intensity Surface..')
-                intensity = arcpy.conversion.LasDatasetToRaster(
-                    out_lasd, os.path.join(out_gdb, "Intensity"), "INTENSITY", "BINNING AVERAGE LINEAR", "FLOAT", "CELLSIZE", 1, 1
-                )
-                if extent_polygon.value:
-                    outExtractByMask = arcpy.sa.ExtractByMask(intensity, extent_polygon.value)
-                    outExtractByMask.save(os.path.join(out_gdb, "Intensity"))
+                try:
+                    arcpy.AddMessage('Creating Hillshade..')
+                    shade = arcpy.sa.Hillshade(dem); shade.save(os.path.join(out_gdb, "Hillshade"))
+                except Exception as e:
+                    arcpy.AddWarning(f'Could not create hillshade raster: {e}')                   
 
+            if out_intensity.value:
+                try:
+                    arcpy.AddMessage('Creating Intensity Surface..')
+                    intensity = arcpy.conversion.LasDatasetToRaster(
+                        out_lasd, os.path.join(out_gdb, "Intensity"), "INTENSITY", "BINNING AVERAGE LINEAR", "FLOAT", "CELLSIZE", 1, 1
+                    )
+                    if extent_polygon.value:
+                        outExtractByMask = arcpy.sa.ExtractByMask(intensity, extent_polygon.value)
+                        outExtractByMask.save(os.path.join(out_gdb, "Intensity"))
+                except Exception as e:
+                    arcpy.AddWarning(f'Could not create intensity surface: {e}')
+
+            if out_contours.value:
+                try:
+                    arcpy.AddMessage('Creating Contours..')
+                    # TODO: allow alternative output units
+                    units = arcpy.Describe(dem).spatialReference.VCS.linearUnitName
+                    contours = os.path.join(
+                        out_gdb, f"Contours_{out_contours_interval.value}_{units.replace(' ', '_')}")
+                    arcpy.sa.Contour(dem, contours, out_contours_interval.value)
+                except Exception as e:
+                    arcpy.AddWarning(f'Could not create contours: {e}')    
+            
             # Extract Classes as polygons
             if polygons.value:
                 arcpy.AddMessage('Generating LAS Class Statistics..')
